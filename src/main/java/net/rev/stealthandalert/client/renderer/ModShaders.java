@@ -28,11 +28,12 @@ public class ModShaders {
 
     /** 惰性初始化：通过 ShaderManager 获取着色器实例（可重复调用） */
     public static void ensureInit() {
-        if (initialized) return;
-        initialized = true;
         try {
             var manager = VeilRenderSystem.renderer().getShaderManager();
-            frustumShader = manager != null ? manager.getShader(FRUSTUM_LOC) : null;
+            var current = manager != null ? manager.getShader(FRUSTUM_LOC) : null;
+            if (initialized && current == frustumShader) return;
+            initialized = true;
+            frustumShader = current;
             if (frustumShader == null || !frustumShader.isValid()) {
                 StealthAndAlert.LOGGER.error("[ModShaders] Failed to load frustum shader at {}", FRUSTUM_LOC);
                 frustumShader = null;

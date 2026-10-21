@@ -9,6 +9,7 @@
     "compat.ironsspellbooks.TrueInvisibilityEffectMixin"
   ],
   "client": [
+    "VisionBlockChangeMixin",
     "EntityMixin",
     "MinecraftMixin"
   ],

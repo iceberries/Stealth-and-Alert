@@ -245,6 +245,37 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
 }
 
+tasks.register('verifyVision', JavaExec) {
+    group = 'verification'
+    description = 'Verifies body exposure, discovery colors and planar vision unions.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'net.rev.stealthandalert.client.renderer.VisionRegressionTests'
+}
+
+tasks.register('smokeVision', JavaExec) {
+    group = 'verification'
+    description = 'Small real-GPU vision smoke; does not run the full regression suite.'
+    dependsOn tasks.named('testClasses'), tasks.named('writeClientLegacyClasspath')
+    classpath = sourceSets.test.runtimeClasspath + files(providers.fileContents(layout.buildDirectory.file('moddev/clientLegacyClasspath.txt')).asText.map { it.readLines() })
+    mainClass = 'net.rev.stealthandalert.client.renderer.VisionSmokeTests'
+}
+
+// ModDev wires Minecraft into main; these geometry regressions also use its Vec3/AABB classes.
+sourceSets.test {
+    compileClasspath += sourceSets.main.compileClasspath
+    runtimeClasspath += sourceSets.main.compileClasspath
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyVision')
+}
+
+// These regressions use a JavaExec assertion runner rather than a JUnit test engine.
+tasks.named('test', Test) {
+    failOnNoDiscoveredTests = false
+}
+
 // IDEA no longer automatically downloads sources/javadoc jars for dependencies, so we need to explicitly enable the behavior.
 idea {
     module {

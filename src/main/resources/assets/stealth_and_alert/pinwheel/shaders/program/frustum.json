@@ -3,11 +3,14 @@
   "fragment": "stealth_and_alert:frustum",
   "attributes": [
     "Position",
+    "UV0",
     "Color"
   ],
   "uniforms": {
     "ModelViewMat": "matrix4x4",
     "ProjMat": "matrix4x4",
-    "DebugForceY": "float"
+    "DebugForceY": "float",
+    "RiskColoring": "float",
+    "MaxOpacity": "float"
   }
 }

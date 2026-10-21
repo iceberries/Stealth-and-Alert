@@ -62,38 +62,11 @@ public class StealthEngine {
             // 涨条期：在AWARE状态下累积
             if (nextPState == AlertData.AWARE) {
                 nextReaction = 0;
-                // 可见度系数
-                double visibility = player.getAttributeValue(ModAttributes.VISIBILITY);
-                double rawVis = Math.clamp(visibility, StealthUtils.VISIBILITY_THRESHOLD, 1.0);
-                double threshold = StealthUtils.VISIBILITY_THRESHOLD;
-                double t = (rawVis - threshold) / (1.0 - threshold);
-                double minBase = 0.6;
-                double visModifier = minBase + (1.0 - minBase) * Math.pow(t, 0.5);
-                visModifier *= CommonConfigs.AWARENESS.increaseVisibilityFactor.get();
-                visModifier = Math.clamp(visModifier, 0.1, 10.0);
-                //double visModifier = Math.clamp(visibility, StealthUtils.VISIBILITY_THRESHOLD, 1);
-
-                // 距离系数
-                double distanceSqr = mob.distanceToSqr(player);
-                double distModifier = 1F;
-                if (distanceSqr <= 256) {
-                    double dist = Math.sqrt(distanceSqr);
-                    dist = Math.clamp(dist, 0.4, 16);
-                    distModifier = (Math.pow(8.0F / dist, 2.5));
-                    distModifier = Math.clamp(distModifier, 1, 300);
-                    distModifier *= CommonConfigs.AWARENESS.increaseDistanceFactor.get();
-                }
-                // 状态系数
-                double stateModifier = 1;
-                if (state == AlertData.SUSPICIOUS) {
-                    stateModifier *= CommonConfigs.AWARENESS.increaseSuspiciousFactor.get();
-                } else if (state == AlertData.SEARCHING) {
-                    stateModifier *= CommonConfigs.AWARENESS.increaseSearchingFactor.get();
-                }
-
-                double basicIncreaseRate = CommonConfigs.AWARENESS.increaseBasicRate.get();
-
-                double awarenessIncreaseRate = basicIncreaseRate * visModifier * distModifier * stateModifier;
+                boolean touching = mob.getBoundingBox().intersects(player.getBoundingBox().inflate(0.4));
+                double exposure = touching ? 1.0 : BodyVisibility.between(mob, player).fraction();
+                double awarenessIncreaseRate = DetectionMath.awarenessRate(
+                        Math.sqrt(mob.distanceToSqr(player)),
+                        player.getAttributeValue(ModAttributes.VISIBILITY), state, exposure);
                 nextLevel = (float) Math.min(100.0, currentLevel + awarenessIncreaseRate);
                 if (nextLevel >= 100.0F) {
                     nextPState = AlertData.TRACKING;

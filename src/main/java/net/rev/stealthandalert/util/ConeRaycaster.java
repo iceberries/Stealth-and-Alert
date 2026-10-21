@@ -38,7 +38,72 @@ public final class ConeRaycaster {
      * 3D 视锥网格数据：origin = 眼睛；grid = [yaw][pitch] 网格，
      * 每个点是该方向射线打到第一个方块表面（地面）的位置（或最大视野距离处）。
      */
-    public record OccludedConeData(Vec3 origin, List<List<Vec3>> grid, double viewRange) {}
+    public record OccludedConeData(Vec3 origin, List<List<Vec3>> grid,
+                                   List<List<Vec3>> normals, double viewRange) {}
+
+    public static Cursor begin(Mob mob, double range) { return new Cursor(mob, range); }
+
+    /** Main-thread ray cursor; even the fallback-to-ground ray is a separate budgeted step. */
+    public static final class Cursor {
+        private final Mob mob;
+        private final Level level;
+        private final Vec3 eye;
+        private final double range;
+        private final Vec3[][] ends = new Vec3[CONE_RAYS + 1][PITCH_STEPS + 1];
+        private final List<List<Vec3>> grid = new ArrayList<>(), normals = new ArrayList<>();
+        private int index;
+        private boolean groundPending;
+
+        private Cursor(Mob mob, double range) {
+            this.mob = mob;
+            level = mob.level();
+            eye = mob.getEyePosition(1);
+            var settings = EntityAlertConditionConfigLoader.get(mob.getType());
+            this.range = range > 0 ? range : settings.getViewRange();
+            Vec3 look = mob.getViewVector(1).normalize();
+            Vec3 horizontal = new Vec3(look.x, 0, look.z);
+            horizontal = horizontal.lengthSqr() < 1e-6 ? new Vec3(0, 0, 1) : horizontal.normalize();
+            Vec3 right = horizontal.cross(UP).normalize();
+            double halfYaw = Math.toRadians(settings.getHorizontalFov() / 2), down = Math.toRadians(settings.getMaxDownPitch());
+            double elevation = Math.asin(Math.clamp(look.y, -1, 1));
+            for (int y = 0; y <= CONE_RAYS; y++) {
+                grid.add(new ArrayList<>());
+                normals.add(new ArrayList<>());
+                double yaw = -halfYaw + 2 * halfYaw * y / CONE_RAYS;
+                Vec3 direction = horizontal.scale(Math.cos(yaw)).add(right.scale(Math.sin(yaw))).normalize();
+                for (int p = 0; p <= PITCH_STEPS; p++) {
+                    double angle = elevation - down + down * p / PITCH_STEPS;
+                    ends[y][p] = eye.add(direction.x * Math.cos(angle) * this.range,
+                            Math.sin(angle) * this.range, direction.z * Math.cos(angle) * this.range);
+                }
+            }
+        }
+
+        public boolean done() { return index == (CONE_RAYS + 1) * (PITCH_STEPS + 1); }
+
+        public void step() {
+            if (done()) return;
+            int y = index / (PITCH_STEPS + 1), p = index % (PITCH_STEPS + 1);
+            Vec3 end = ends[y][p];
+            BlockHitResult hit;
+            if (groundPending) hit = clampToGround(level, mob, end.x, end.z, end.y);
+            else {
+                hit = level.clip(CommonUtils.getClipContext(mob, eye, end));
+                if (hit.getType() == HitResult.Type.MISS) { groundPending = true; return; }
+            }
+            grid.get(y).add(hit.getType() == HitResult.Type.MISS ? end : hit.getLocation());
+            normals.get(y).add(hit.getType() == HitResult.Type.MISS ? Vec3.ZERO
+                    : new Vec3(hit.getDirection().getStepX(), hit.getDirection().getStepY(), hit.getDirection().getStepZ()));
+            groundPending = false;
+            index++;
+        }
+
+        public OccludedConeData result() {
+            if (!done()) throw new IllegalStateException("Projection is not complete");
+            return new OccludedConeData(eye, grid.stream().map(List::copyOf).toList(),
+                    normals.stream().map(List::copyOf).toList(), range);
+        }
+    }
 
     /**
      * 计算生物视锥的地面投影网格（默认仅向下投影，供渲染手电筒光斑使用）。
@@ -112,6 +177,7 @@ public final class ConeRaycaster {
         double lookElev = Math.asin(Math.clamp(look.y, -1.0, 1.0));
 
         List<List<Vec3>> grid = new ArrayList<>(coneRays + 1);
+        List<List<Vec3>> normals = new ArrayList<>(coneRays + 1);
         for (int yi = 0; yi <= coneRays; yi++) {
             double yaw = -halfHFov + (2.0 * halfHFov) * yi / coneRays;
             double cy = Math.cos(yaw), sy = Math.sin(yaw);
@@ -122,6 +188,7 @@ public final class ConeRaycaster {
             ).normalize();
 
             List<Vec3> column = new ArrayList<>(pitchSteps + 1);
+            List<Vec3> normalColumn = new ArrayList<>(pitchSteps + 1);
             // relPitch ∈ [-maxDown, +maxUp]：向下到向上完整视野角（includeUp=false 时仅向下）
             for (int pi = 0; pi <= pitchSteps; pi++) {
                 double relPitch = -maxDown + (maxDown + maxUp) * ((double) pi / pitchSteps);
@@ -136,26 +203,28 @@ public final class ConeRaycaster {
                 Vec3 point;
                 if (hit.getType() == HitResult.Type.MISS) {
                     // 射线过浅没打到方块（会抬到空中/射向天）：垂直向下找该 XZ 的地面，保持贴地
-                    point = clampToGround(level, mob, end.x, end.z, end.y);
-                } else {
-                    point = hit.getLocation();
+                    hit = clampToGround(level, mob, end.x, end.z, end.y);
                 }
+                point = hit.getType() == HitResult.Type.MISS ? end : hit.getLocation();
                 column.add(point);
+                normalColumn.add(hit.getType() == HitResult.Type.MISS ? Vec3.ZERO
+                        : new Vec3(hit.getDirection().getStepX(), hit.getDirection().getStepY(),
+                        hit.getDirection().getStepZ()));
             }
             grid.add(column);
+            normals.add(normalColumn);
         }
 
-        return new OccludedConeData(eye, grid, range);
+        return new OccludedConeData(eye, grid, normals, range);
     }
 
     /**
      * 从 fromY 垂直向下找该 (x,z) 处的地面，返回地面命中点；找不到则返回原位置。
      */
-    private static Vec3 clampToGround(Level level, Mob mob, double x, double z, double fromY) {
+    private static BlockHitResult clampToGround(Level level, Mob mob, double x, double z, double fromY) {
         Vec3 start = new Vec3(x, fromY, z);
         Vec3 end = new Vec3(x, level.getMinBuildHeight(), z);
         ClipContext ctx = CommonUtils.getClipContext(mob, start, end);
-        BlockHitResult hit = level.clip(ctx);
-        return hit.getType() == HitResult.Type.MISS ? new Vec3(x, fromY, z) : hit.getLocation();
+        return level.clip(ctx);
     }
 }

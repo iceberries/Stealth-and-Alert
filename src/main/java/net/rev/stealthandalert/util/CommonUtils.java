@@ -136,23 +136,7 @@ public class CommonUtils {
 
     // 视线检测：如果mob能看到target，则返回true
     public static boolean hasLineOfSight(Mob observer, Entity target) {
-        // 距离快速失败
-        double distanceSqr = observer.distanceToSqr(target);
-        double maxDistance = target instanceof Player player
-                ? getCorrectedViewRange(observer, player)
-                : EntityAlertConditionConfigLoader.get(observer.getType()).getViewRange();
-        if (distanceSqr > maxDistance * maxDistance) return false;
-        // 获取观察方向与目标向量
-        Vec3 eyePos = observer.getEyePosition();
-        Vec3 lookVec = observer.getViewVector(1.0F);
-        Vec3 targetVec = target.getEyePosition().subtract(eyePos);
-        Vec3 targetDir = targetVec.normalize();
-
-        // 水平与垂直FOV判定
-        if (!isWithinFOV(observer, lookVec, targetDir)) return false;
-
-        // 多点物理遮挡检查
-        return canSeeAnyPart(observer, target, eyePos);
+        return BodyVisibility.between(observer, target).visible();
     }
 
     public static boolean isFullyNaked(Player player) {
@@ -160,37 +144,6 @@ public class CommonUtils {
             if (!armor.isEmpty()) return false;
         }
         return true;
-    }
-
-    // 三点检查
-    private static boolean canSeeAnyPart(Mob observer, Entity target, Vec3 start) {
-        // 获取碰撞箱宽度的一半
-        double halfW = target.getBbWidth() / 2.0 * 0.8;
-        double chestY = target.getY() + target.getBbHeight() * 0.5;
-        double footY = target.getY() + 0.1;
-
-        Vec3[] checkPoints = {
-                target.getEyePosition(),
-                new Vec3(target.getX(), chestY, target.getZ()),
-                new Vec3(target.getX(), footY, target.getZ()),
-
-                new Vec3(target.getX() + halfW, chestY, target.getZ() + halfW),
-                new Vec3(target.getX() - halfW, chestY, target.getZ() - halfW),
-                new Vec3(target.getX() + halfW, chestY, target.getZ() - halfW),
-                new Vec3(target.getX() - halfW, chestY, target.getZ() + halfW)
-        };
-
-        for (Vec3 end : checkPoints) {
-            if (isLineClear(observer, start, end)) return true;
-        }
-        return false;
-    }
-
-    // 视线射线检测
-    private static boolean isLineClear(Mob observer, Vec3 start, Vec3 end) {
-        Level level = observer.level();
-        ClipContext context = getClipContext(observer, start, end);
-        return level.clip(context).getType() == HitResult.Type.MISS;
     }
 
     // 射线上下文获取
@@ -212,34 +165,34 @@ public class CommonUtils {
     }
 
     // FOV判定
-    private static boolean isWithinFOV(Mob observer, Vec3 lookVec, Vec3 targetDir) {
-        boolean isVerticalLooking = Math.abs(lookVec.x) < 0.0001 && Math.abs(lookVec.z) < 0.0001;
+    public static boolean isWithinFOV(Mob observer, Vec3 lookVec, Vec3 targetDir) {
+        return isWithinFOV(EntityAlertConditionConfigLoader.get(observer.getType()), lookVec, targetDir);
+    }
 
-        EntityAlertConditionSettings settings = EntityAlertConditionConfigLoader.get(observer.getType());
-        // 水平角度判定
-        if (!isVerticalLooking) {
-            Vec3 lookHorizontal = new Vec3(lookVec.x, 0, lookVec.z).normalize();
-            Vec3 targetHorizontal = new Vec3(targetDir.x, 0, targetDir.z).normalize();
+    public static boolean isWithinFOV(EntityAlertConditionSettings settings, Vec3 lookVec, Vec3 targetDir) {
+        return new FovContext(settings, lookVec).contains(targetDir);
+    }
 
-            double horizontalDot = lookHorizontal.dot(targetHorizontal);
-            double horizontalThreshold = Math.cos(Math.toRadians(settings.getHorizontalFov()) / 2.0);
+    /** Observer constants are shared by all body samples in a prediction job. */
+    public static final class FovContext {
+        private final boolean vertical;
+        private final Vec3 horizontal;
+        private final double horizontalThreshold, pitch, maxUp, maxDown;
 
-            if (horizontalDot < horizontalThreshold) return false;
+        public FovContext(EntityAlertConditionSettings settings, Vec3 look) {
+            vertical = Math.abs(look.x) < 0.0001 && Math.abs(look.z) < 0.0001;
+            horizontal = new Vec3(look.x, 0, look.z).normalize();
+            horizontalThreshold = Math.cos(Math.toRadians(settings.getHorizontalFov()) / 2);
+            pitch = Math.toDegrees(Math.asin(Math.clamp(look.y, -1, 1)));
+            maxUp = settings.getMaxUpPitch();
+            maxDown = settings.getMaxDownPitch();
         }
 
-        // 垂直角度判定
-        // 1. 获取目标相对于水平面的绝对仰角
-        double targetPitchDegrees = Math.toDegrees(Math.asin(targetDir.y));
-        // 2. 获取观察者当前视线相对于水平面的绝对仰角
-        double observerPitchDegrees = Math.toDegrees(Math.asin(lookVec.y));
-
-        // 3. 计算相对仰角 (目标在视线上方为正，下方为负)
-        double relativePitch = targetPitchDegrees - observerPitchDegrees;
-
-        double maxUpPitch = settings.getMaxUpPitch();
-        double maxDownPitch = settings.getMaxDownPitch();
-
-        // 判断相对角度是否在 FOV 限制内
-        return relativePitch >= -maxDownPitch && relativePitch <= maxUpPitch;
+        public boolean contains(Vec3 direction) {
+            if (!vertical && horizontal.dot(new Vec3(direction.x, 0, direction.z).normalize()) < horizontalThreshold)
+                return false;
+            double relativePitch = Math.toDegrees(Math.asin(Math.clamp(direction.y, -1, 1))) - pitch;
+            return relativePitch >= -maxDown && relativePitch <= maxUp;
+        }
     }
 }
